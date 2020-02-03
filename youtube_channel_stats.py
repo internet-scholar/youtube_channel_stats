@@ -10,6 +10,8 @@ import json
 from datetime import datetime
 import time
 import uuid
+from socket import error as SocketError
+import errno
 
 SELECT_DISTINCT_CHANNEL = """
 select distinct
@@ -74,6 +76,7 @@ class YoutubeChannelStats:
 
     LOGGING_INTERVAL = 100
     WAIT_WHEN_SERVICE_UNAVAILABLE = 30
+    WAIT_WHEN_CONNECTION_RESET_BY_PEER = 60
 
     def collect_channel_stats(self):
         logging.info("Start collecting Youtube channel stats")
@@ -110,11 +113,27 @@ class YoutubeChannelStats:
                     num_channels = num_channels + 1
 
                     service_unavailable = 0
+                    connection_reset_by_peer = 0
                     no_response = True
                     while no_response:
                         try:
                             response = youtube.channels().list(part="statistics",id=channel_id['channel_id']).execute()
                             no_response = False
+                        except SocketError as e:
+                            if e.errno != errno.ECONNRESET:
+                                raise
+                            else:
+                                connection_reset_by_peer = connection_reset_by_peer + 1
+                                if connection_reset_by_peer <= 10:
+                                    time.sleep(secs=self.WAIT_WHEN_CONNECTION_RESET_BY_PEER)
+                                    youtube = googleapiclient.discovery.build(serviceName="youtube",
+                                                                              version="v3",
+                                                                              developerKey=
+                                                                              self.credentials[current_key][
+                                                                                  'developer_key'],
+                                                                              cache_discovery=False)
+                                else:
+                                    raise
                         except HttpError as e:
                             if "403" in str(e):
                                 logging.info("Invalid {} developer key: {}".format(
