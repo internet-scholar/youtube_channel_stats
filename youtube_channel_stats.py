@@ -121,9 +121,11 @@ class YoutubeChannelStats:
                             no_response = False
                         except SocketError as e:
                             if e.errno != errno.ECONNRESET:
+                                logging.info("Other socket error!")
                                 raise
                             else:
                                 connection_reset_by_peer = connection_reset_by_peer + 1
+                                logging.info("Connection reset by peer! {}".format(connection_reset_by_peer))
                                 if connection_reset_by_peer <= 10:
                                     time.sleep(secs=self.WAIT_WHEN_CONNECTION_RESET_BY_PEER)
                                     youtube = googleapiclient.discovery.build(serviceName="youtube",
