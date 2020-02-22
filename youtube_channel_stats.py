@@ -1,4 +1,5 @@
 import argparse
+import random
 import boto3
 from internet_scholar import read_dict_from_s3_url, AthenaLogger, AthenaDatabase, compress
 import logging
@@ -70,6 +71,7 @@ TBLPROPERTIES ('has_encrypted_data'='false')
 class YoutubeChannelStats:
     def __init__(self, credentials, athena_data, s3_admin, s3_data):
         self.credentials = credentials
+        random.shuffle(self.credentials)
         self.athena_data = athena_data
         self.s3_admin = s3_admin
         self.s3_data = s3_data
@@ -181,6 +183,26 @@ class YoutubeChannelStats:
         athena.query_athena_and_wait(query_string="MSCK REPAIR TABLE youtube_channel_stats")
 
         logging.info("Concluded collecting channel stats")
+
+
+def test_api_keys(s3_path):
+    config = read_dict_from_s3_url(url=s3_path)
+    credentials = config['youtube']
+    current_key = 0
+    for current_key in range(0, len(credentials)):
+        youtube = googleapiclient.discovery.build(serviceName="youtube",
+                                                  version="v3",
+                                                  developerKey=
+                                                  credentials[current_key]['developer_key'],
+                                                  cache_discovery=False)
+        try:
+            print('Email: {}'.format(credentials[current_key]['email']))
+            print('Project: {}'.format(credentials[current_key]['project']))
+            print('Key: {}'.format(credentials[current_key]['developer_key']))
+            youtube.channels().list(part="statistics", id='UCYiM773ssvNMaBHvaWWeIoQ').execute()
+            print('OK!')
+        except Exception as e:
+            print('Error! {}'.format(str(e)))
 
 
 def main():
