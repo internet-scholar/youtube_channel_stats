@@ -117,6 +117,7 @@ class YoutubeChannelStats:
                     service_unavailable = 0
                     connection_reset_by_peer = 0
                     no_response = True
+                    response = dict()
                     while no_response:
                         try:
                             response = youtube.channels().list(part="statistics",id=channel_id['channel_id']).execute()
