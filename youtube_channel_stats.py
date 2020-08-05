@@ -154,8 +154,11 @@ class YoutubeChannelStats:
                                                                               self.credentials[current_key][
                                                                                   'developer_key'],
                                                                               cache_discovery=False)
-                            elif "503" in str(e):
-                                logging.info("Service unavailable")
+                            elif ("503" in str(e)) or ("500" in str(e)):
+                                if "503" in str(e):
+                                    logging.info("Service unavailable")
+                                else:  # 500
+                                    logging.info("Internal error encountered")
                                 service_unavailable = service_unavailable + 1
                                 if service_unavailable <= 10:
                                     time.sleep(self.WAIT_WHEN_SERVICE_UNAVAILABLE)
