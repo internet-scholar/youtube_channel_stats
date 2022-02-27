@@ -123,6 +123,7 @@ class YoutubeChannelStats:
 
                     service_unavailable = 0
                     connection_reset_by_peer = 0
+                    connection_timedout = 0
                     no_response = True
                     response = dict()
                     while no_response:
@@ -130,9 +131,31 @@ class YoutubeChannelStats:
                             response = youtube.channels().list(part="statistics",id=channel_id['channel_id']).execute()
                             no_response = False
                         except SocketError as e:
-                            if e.errno != errno.ECONNRESET:
+                            if (e.errno != errno.ECONNRESET) and (e.errno != errno.ETIMEDOUT):
                                 logging.info("Other socket error!")
                                 raise
+                            elif e.errno == errno.ETIMEDOUT:
+                                connection_timedout = connection_timedout + 1
+                                logging.info("Connection timed out! {}".format(connection_timedout))
+                                if connection_timedout <= 10:
+                                    time.sleep(self.WAIT_WHEN_CONNECTION_RESET_BY_PEER)
+                                    try:
+                                        youtube = googleapiclient.discovery.build(serviceName="youtube",
+                                                                                  version="v3",
+                                                                                  developerKey=
+                                                                                  self.credentials[current_key][
+                                                                                      'developer_key'],
+                                                                                  cache_discovery=False)
+                                    except UnknownApiNameOrVersion as e:
+                                        service = read_dict_from_url(
+                                            url="https://www.googleapis.com/discovery/v1/apis/youtube/v3/rest")
+                                        youtube = googleapiclient.discovery.build_from_document(service=service,
+                                                                                                developerKey=
+                                                                                                self.credentials[
+                                                                                                    current_key][
+                                                                                                    'developer_key'])
+                                else:
+                                    raise
                             else:
                                 connection_reset_by_peer = connection_reset_by_peer + 1
                                 logging.info("Connection reset by peer! {}".format(connection_reset_by_peer))
