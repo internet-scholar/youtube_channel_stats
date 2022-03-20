@@ -110,7 +110,7 @@ class YoutubeChannelStats:
             logging.info('Cleaned queue for channels')
             channels_message = list()
             for channel_id in reader:
-                channels_message.append(channel_id)
+                channels_message.append(channel_id['channel_id'])
                 if len(channels_message) == self.QUEUING_INTERVAL:
                     channels_queue.send_message(MessageBody=json.dumps(channels_message))
                     channels_message = list()
