@@ -1,7 +1,7 @@
 import argparse
 import random
 import boto3
-from internet_scholar import read_dict_from_s3_url, AthenaLogger, AthenaDatabase, instantiate_ec2
+from internet_scholar import read_dict_from_s3_url, AthenaLogger, AthenaDatabase
 import logging
 import csv
 from pathlib import Path
