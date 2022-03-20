@@ -1,18 +1,11 @@
 import argparse
 import random
 import boto3
-from internet_scholar import read_dict_from_s3_url, AthenaLogger, AthenaDatabase, compress, read_dict_from_url
+from internet_scholar import read_dict_from_s3_url, AthenaLogger, AthenaDatabase, instantiate_ec2
 import logging
-import googleapiclient.discovery
-from googleapiclient.errors import HttpError, UnknownApiNameOrVersion
 import csv
 from pathlib import Path
 import json
-from datetime import datetime
-import time
-import uuid
-from socket import error as SocketError
-import errno
 
 SELECT_DISTINCT_CHANNEL = """
 select distinct
@@ -20,7 +13,15 @@ select distinct
 from
   youtube_video_snippet
 where
-  snippet.channelId is not NULL
+  snippet.channelId is not NULL and
+  snippet.channelId not in (
+    select
+      youtube_channel_stats.id
+    from
+      youtube_channel_stats
+    where
+      youtube_channel_stats.creation_date = cast(current_date as varchar)
+    )
 """
 
 SELECT_COUNT_DISTINCT_CHANNEL = """
@@ -28,11 +29,8 @@ select count(distinct snippet.channelId) as channel_count
 from
   youtube_video_snippet
 where
-  snippet.channelId is not NULL
-"""
-
-EXTRA_CHANNEL = """
-  and snippet.channelId not in (
+  snippet.channelId is not NULL and
+  snippet.channelId not in (
     select
       youtube_channel_stats.id
     from
@@ -76,192 +74,52 @@ class YoutubeChannelStats:
         self.s3_admin = s3_admin
         self.s3_data = s3_data
 
-    LOGGING_INTERVAL = 100
+    QUEUING_INTERVAL = 1000
     WAIT_WHEN_SERVICE_UNAVAILABLE = 30
     WAIT_WHEN_CONNECTION_RESET_BY_PEER = 60
 
     def collect_channel_stats(self):
-        logging.info("Start collecting Youtube channel stats")
+        logging.info("Start collecting Youtube channel stats - producer")
         channel_ids = Path(Path(__file__).parent, 'tmp', 'channel_ids.csv')
+
+        sqs = boto3.resource('sqs')
+        credentials_queue = sqs.get_queue_by_name(QueueName='youtube_credentials')
+        credentials_queue.purge()
+        logging.info('Cleaned queue for credentials')
+        for credential in self.credentials:
+            credentials_queue.send_message(MessageBody=credential['developer_key'])
+        logging.info('Enqueued credentials')
+
         athena = AthenaDatabase(database=self.athena_data, s3_output=self.s3_admin)
-        if not athena.table_exists('youtube_channel_stats'):
-            query = SELECT_DISTINCT_CHANNEL
-            query_count = SELECT_COUNT_DISTINCT_CHANNEL
-        else:
-            query = SELECT_DISTINCT_CHANNEL + EXTRA_CHANNEL
-            query_count = SELECT_COUNT_DISTINCT_CHANNEL + EXTRA_CHANNEL
-        athena.query_athena_and_download(query_string=query, filename=channel_ids)
-        channel_count = int(
-            athena.query_athena_and_get_result(
-                query_string=query_count
-            )['channel_count']
-        )
-        logging.info("There are %d channels to be processed: download them", channel_count)
-
-        current_key = 0
-        try:
-            youtube = googleapiclient.discovery.build(serviceName="youtube",
-                                                      version="v3",
-                                                      developerKey=
-                                                      self.credentials[current_key]['developer_key'],
-                                                      cache_discovery=False)
-        except UnknownApiNameOrVersion as e:
-            service = read_dict_from_url(url="https://www.googleapis.com/discovery/v1/apis/youtube/v3/rest")
-            youtube = googleapiclient.discovery.build_from_document(service=service,
-                                                                    developerKey=self.credentials[current_key][
-                                                                        'developer_key'])
-
-        with open(channel_ids, newline='') as csv_reader:
-            output_json = Path(Path(__file__).parent, 'tmp', 'youtube_channel_stats.json')
-            with open(output_json, 'w') as json_writer:
-                reader = csv.DictReader(csv_reader)
-                num_channels = 0
-                for channel_id in reader:
-                    if num_channels % self.LOGGING_INTERVAL == 0:
-                        logging.info("%d out of %d channels processed", num_channels, channel_count)
-                    num_channels = num_channels + 1
-
-                    service_unavailable = 0
-                    connection_reset_by_peer = 0
-                    connection_timedout = 0
-                    no_response = True
-                    response = dict()
-                    while no_response:
-                        try:
-                            response = youtube.channels().list(part="statistics",id=channel_id['channel_id']).execute()
-                            no_response = False
-                        except SocketError as e:
-                            if (e.errno != errno.ECONNRESET) and (e.errno != errno.ETIMEDOUT):
-                                logging.info("Other socket error!")
-                                raise
-                            elif e.errno == errno.ETIMEDOUT:
-                                connection_timedout = connection_timedout + 1
-                                logging.info("Connection timed out! {}".format(connection_timedout))
-                                if connection_timedout <= 10:
-                                    time.sleep(self.WAIT_WHEN_CONNECTION_RESET_BY_PEER)
-                                    try:
-                                        youtube = googleapiclient.discovery.build(serviceName="youtube",
-                                                                                  version="v3",
-                                                                                  developerKey=
-                                                                                  self.credentials[current_key][
-                                                                                      'developer_key'],
-                                                                                  cache_discovery=False)
-                                    except UnknownApiNameOrVersion as e:
-                                        service = read_dict_from_url(
-                                            url="https://www.googleapis.com/discovery/v1/apis/youtube/v3/rest")
-                                        youtube = googleapiclient.discovery.build_from_document(service=service,
-                                                                                                developerKey=
-                                                                                                self.credentials[
-                                                                                                    current_key][
-                                                                                                    'developer_key'])
-                                else:
-                                    raise
-                            else:
-                                connection_reset_by_peer = connection_reset_by_peer + 1
-                                logging.info("Connection reset by peer! {}".format(connection_reset_by_peer))
-                                if connection_reset_by_peer <= 10:
-                                    time.sleep(self.WAIT_WHEN_CONNECTION_RESET_BY_PEER)
-                                    try:
-                                        youtube = googleapiclient.discovery.build(serviceName="youtube",
-                                                                                  version="v3",
-                                                                                  developerKey=
-                                                                                  self.credentials[current_key][
-                                                                                      'developer_key'],
-                                                                                  cache_discovery=False)
-                                    except UnknownApiNameOrVersion as e:
-                                        service = read_dict_from_url(
-                                            url="https://www.googleapis.com/discovery/v1/apis/youtube/v3/rest")
-                                        youtube = googleapiclient.discovery.build_from_document(service=service,
-                                                                                                developerKey=
-                                                                                                self.credentials[
-                                                                                                    current_key][
-                                                                                                    'developer_key'])
-                                else:
-                                    raise
-                        except HttpError as e:
-                            if "403" in str(e):
-                                logging.info("Invalid {} developer key: {}".format(
-                                    current_key,
-                                    self.credentials[current_key]['developer_key']))
-                                current_key = current_key + 1
-                                if current_key >= len(self.credentials):
-                                    raise
-                                else:
-                                    try:
-                                        youtube = googleapiclient.discovery.build(serviceName="youtube",
-                                                                                  version="v3",
-                                                                                  developerKey=
-                                                                                  self.credentials[current_key][
-                                                                                      'developer_key'],
-                                                                                  cache_discovery=False)
-                                    except UnknownApiNameOrVersion as e:
-                                        service = read_dict_from_url(
-                                            url="https://www.googleapis.com/discovery/v1/apis/youtube/v3/rest")
-                                        youtube = googleapiclient.discovery.build_from_document(service=service,
-                                                                                                developerKey=
-                                                                                                self.credentials[
-                                                                                                    current_key][
-                                                                                                    'developer_key'])
-                            elif ("503" in str(e)) or ("500" in str(e)):
-                                if "503" in str(e):
-                                    logging.info("Service unavailable")
-                                else:  # 500
-                                    logging.info("Internal error encountered")
-                                service_unavailable = service_unavailable + 1
-                                if service_unavailable <= 10:
-                                    time.sleep(self.WAIT_WHEN_SERVICE_UNAVAILABLE)
-                                else:
-                                    raise
-                            else:
-                                raise
-                    for item in response.get('items', []):
-                        item['retrieved_at'] = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-                        json_writer.write("{}\n".format(json.dumps(item)))
-
-        logging.info("Compress file %s", output_json)
-        compressed_file = compress(filename=output_json, delete_original=True)
-
-        s3 = boto3.resource('s3')
-        s3_filename = "youtube_channel_stats/creation_date={}/{}-{}.json.bz2".format(
-            datetime.utcnow().strftime("%Y-%m-%d"),
-            uuid.uuid4().hex,
-            num_channels)
-        logging.info("Upload file %s to bucket %s at %s", compressed_file, self.s3_data, s3_filename)
-        s3.Bucket(self.s3_data).upload_file(str(compressed_file), s3_filename)
-
         logging.info("Recreate table for Youtube channel stats")
         athena.query_athena_and_wait(query_string="DROP TABLE IF EXISTS youtube_channel_stats")
         athena.query_athena_and_wait(query_string=CREATE_CHANNEL_STATS_JSON.format(s3_bucket=self.s3_data))
         athena.query_athena_and_wait(query_string="MSCK REPAIR TABLE youtube_channel_stats")
+        athena.query_athena_and_download(query_string=SELECT_DISTINCT_CHANNEL, filename=channel_ids)
+        channel_count = int(
+            athena.query_athena_and_get_result(
+                query_string=SELECT_COUNT_DISTINCT_CHANNEL
+            )['channel_count']
+        )
+        logging.info("There are %d channels to be processed: download them", channel_count)
 
-        logging.info("Concluded collecting channel stats")
+        with open(channel_ids, newline='') as csv_reader:
+            reader = csv.DictReader(csv_reader)
+            channels_queue = sqs.get_queue_by_name(QueueName='youtube_channels')
+            channels_queue.purge()
+            logging.info('Cleaned queue for channels')
+            channels_message = list()
+            for channel_id in reader:
+                channels_message.append(channel_id)
+                if len(channels_message) == self.QUEUING_INTERVAL:
+                    channels_queue.send_message(MessageBody=json.dumps(channels_message))
+                    channels_message = list()
+                    logging.info("Added %d channels to the queue", self.QUEUING_INTERVAL)
+            if len(channels_message) != 0:
+                channels_queue.send_message(MessageBody=json.dumps(channels_message))
+                logging.info("Added %d channels to the queue", len(channels_message))
 
-
-def test_api_keys(s3_path):
-    config = read_dict_from_s3_url(url=s3_path)
-    credentials = config['youtube']
-    current_key = 0
-    for current_key in range(0, len(credentials)):
-        try:
-            youtube = googleapiclient.discovery.build(serviceName="youtube",
-                                                      version="v3",
-                                                      developerKey=
-                                                      credentials[current_key]['developer_key'],
-                                                      cache_discovery=False)
-        except UnknownApiNameOrVersion as e:
-            service = read_dict_from_url(url="https://www.googleapis.com/discovery/v1/apis/youtube/v3/rest")
-            youtube = googleapiclient.discovery.build_from_document(service=service,
-                                                                    developerKey=credentials[current_key][
-                                                                        'developer_key'])
-
-        try:
-            print('Email: {}'.format(credentials[current_key]['email']))
-            print('Project: {}'.format(credentials[current_key]['project']))
-            print('Key: {}'.format(credentials[current_key]['developer_key']))
-            youtube.channels().list(part="statistics", id='UCYiM773ssvNMaBHvaWWeIoQ').execute()
-            print('OK!')
-        except Exception as e:
-            print('Error! {}'.format(str(e)))
+        logging.info("Concluded collecting channel stats - producer")
 
 
 def main():
