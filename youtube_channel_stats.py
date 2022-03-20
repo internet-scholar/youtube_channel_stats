@@ -80,7 +80,6 @@ class YoutubeChannelStats:
 
     def collect_channel_stats(self):
         logging.info("Start collecting Youtube channel stats - producer")
-        channel_ids = Path(Path(__file__).parent, 'tmp', 'channel_ids.csv')
 
         sqs = boto3.resource('sqs')
         credentials_queue = sqs.get_queue_by_name(QueueName='youtube_credentials')
@@ -95,6 +94,7 @@ class YoutubeChannelStats:
         athena.query_athena_and_wait(query_string="DROP TABLE IF EXISTS youtube_channel_stats")
         athena.query_athena_and_wait(query_string=CREATE_CHANNEL_STATS_JSON.format(s3_bucket=self.s3_data))
         athena.query_athena_and_wait(query_string="MSCK REPAIR TABLE youtube_channel_stats")
+        channel_ids = Path(Path(__file__).parent, 'tmp', 'channel_ids.csv')
         athena.query_athena_and_download(query_string=SELECT_DISTINCT_CHANNEL, filename=channel_ids)
         channel_count = int(
             athena.query_athena_and_get_result(
