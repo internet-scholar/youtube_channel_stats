@@ -1,7 +1,7 @@
 #!/bin/bash
 sudo timedatectl set-timezone UTC
-sudo apt update -y
-sudo apt install -y python3-pip
+sudo apt-get update -y
+sudo apt-get install -y python3-pip
 cd /home/ubuntu
 wget https://raw.githubusercontent.com/internet-scholar/youtube_channel_stats/master/requirements.txt
 wget https://raw.githubusercontent.com/internet-scholar/youtube_channel_stats/master/youtube_channel_stats.py
